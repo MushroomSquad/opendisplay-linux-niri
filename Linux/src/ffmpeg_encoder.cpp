@@ -3,6 +3,7 @@
 #include "opendisplay/log.hpp"
 
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -185,8 +186,11 @@ std::vector<std::string> FfmpegEncoder::arguments(const VideoFormat& input) cons
     if (selected_ == EncoderKind::Vaapi) {
         // maxrate == bitrate makes FFmpeg pick CBR, where radeonsi pads static
         // frames with filler NAL units that h264_metadata rejects (packet lost).
-        args.insert(args.end(), {"-vf", scale + ",format=nv12,hwupload", "-c:v", "h264_vaapi",
-                                 "-rc_mode", "VBR"});
+        // Upload the raw RGB frame and let the GPU scale and convert to NV12.
+        const std::string gpuScale = "hwupload,scale_vaapi=w=" + std::to_string(outputWidth)
+            + ":h=" + std::to_string(outputHeight) + ":format=nv12";
+        args.insert(args.end(), {"-vf", gpuScale, "-c:v", "h264_vaapi",
+                                 "-rc_mode", "VBR", "-async_depth", "1"});
     } else if (selected_ == EncoderKind::Nvenc) {
         args.insert(args.end(), {"-vf", scale, "-c:v", "h264_nvenc", "-preset", "p1",
                                  "-tune", "ull", "-delay", "0"});
@@ -321,6 +325,28 @@ void FfmpegEncoder::readOutput(const int fd) {
     std::string accessUnit;
     bool hasVcl = false;
     for (;;) {
+        // A NAL is normally closed by the next start code, which only arrives
+        // with the next frame. niri sends frames on damage only, so once FFmpeg
+        // goes quiet treat the buffered NAL as complete and flush the frame.
+        if (!pending.empty()) {
+            pollfd readable{.fd = fd, .events = POLLIN, .revents = 0};
+            const int ready = ::poll(&readable, 1, 3);
+            if (ready == 0) {
+                if (findStartCode(pending, 0) == 0) {
+                    consumeNal(std::move(pending), accessUnit, hasVcl);
+                }
+                pending.clear();
+                if (hasVcl && !accessUnit.empty()) {
+                    emitAccessUnit(std::move(accessUnit));
+                }
+                accessUnit.clear();
+                hasVcl = false;
+                continue;
+            }
+            if (ready < 0 && errno == EINTR) {
+                continue;
+            }
+        }
         const auto count = ::read(fd, buffer.data(), buffer.size());
         if (count < 0 && errno == EINTR) {
             continue;
