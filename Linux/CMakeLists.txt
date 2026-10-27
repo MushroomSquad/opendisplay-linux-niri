@@ -41,6 +41,7 @@ add_custom_command(
 set(OPENDISPLAY_CORE_SOURCES
     include/opendisplay/kde_portal.hpp
     include/opendisplay/hyprland_portal.hpp
+    include/opendisplay/niri_portal.hpp
     include/opendisplay/xdg_portal.hpp
     ${VIRTUAL_POINTER_HEADER}
     ${VIRTUAL_POINTER_CODE}
@@ -52,6 +53,7 @@ set(OPENDISPLAY_CORE_SOURCES
     src/kde_portal.cpp
     src/hyprland_output_controller.cpp
     src/hyprland_portal.cpp
+    src/niri_portal.cpp
     src/pipewire_capture.cpp
     src/pipewire_format.cpp
     src/session.cpp
@@ -167,6 +169,11 @@ if(BUILD_TESTING)
         OD_DESKTOP_FACTORY_TEST_ONLY=1)
     target_compile_options(opendisplay-desktop-backend-tests PRIVATE -UNDEBUG)
     add_test(NAME desktop-backend COMMAND opendisplay-desktop-backend-tests)
+
+    add_executable(opendisplay-niri-portal-tests tests/niri_portal_tests.cpp)
+    target_link_libraries(opendisplay-niri-portal-tests PRIVATE opendisplay-core)
+    target_compile_options(opendisplay-niri-portal-tests PRIVATE -UNDEBUG)
+    add_test(NAME niri-portal COMMAND opendisplay-niri-portal-tests)
 
     add_executable(opendisplay-wire-tests
         tests/wire_tests.cpp

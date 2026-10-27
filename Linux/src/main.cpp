@@ -50,7 +50,8 @@ od::CompositorKind compositor(const QString& value) {
     if (value == QStringLiteral("auto")) return od::CompositorKind::Auto;
     if (value == QStringLiteral("kde")) return od::CompositorKind::Kde;
     if (value == QStringLiteral("hyprland")) return od::CompositorKind::Hyprland;
-    throw std::runtime_error("--compositor must be auto, kde, or hyprland");
+    if (value == QStringLiteral("niri")) return od::CompositorKind::Niri;
+    throw std::runtime_error("--compositor must be auto, kde, hyprland, or niri");
 }
 
 od::ExtendDirection extendDirection(const QString& value) {
@@ -169,7 +170,7 @@ int main(int argc, char* argv[]) {
     const QCommandLineOption encoderOption({"e", "encoder"},
         "FFmpeg encoder: auto, vaapi, nvenc, or software.", "encoder", "auto");
     const QCommandLineOption compositorOption("compositor",
-        "Desktop backend: auto, kde, or hyprland.", "name", "auto");
+        "Desktop backend: auto, kde, hyprland, or niri.", "name", "auto");
     const QCommandLineOption vaapiOption("vaapi-device", "VA-API render node.", "path",
                                          "/dev/dri/renderD128");
     const QCommandLineOption fpsOption("fps", "Maximum frame rate.", "fps", "60");

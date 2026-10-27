@@ -9,7 +9,7 @@ namespace od {
 enum class TransportKind { Auto, Wifi, Usb };
 enum class CaptureMode { Extend, Mirror };
 enum class EncoderKind { Auto, Vaapi, Nvenc, Software };
-enum class CompositorKind { Auto, Kde, Hyprland };
+enum class CompositorKind { Auto, Kde, Hyprland, Niri };
 enum class ExtendDirection { Left, Right, Top, Bottom };
 enum class AlignDirection { Left, Right, Top, Bottom, Center };
 

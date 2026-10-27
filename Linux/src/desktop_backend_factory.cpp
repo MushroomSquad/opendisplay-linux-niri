@@ -5,6 +5,7 @@
 #ifndef OD_DESKTOP_FACTORY_TEST_ONLY
 #include "opendisplay/hyprland_portal.hpp"
 #include "opendisplay/kde_portal.hpp"
+#include "opendisplay/niri_portal.hpp"
 #endif
 
 #include <QByteArray>
@@ -28,6 +29,9 @@ CompositorKind detectCompositor(const CompositorKind requested,
     if (!hyprlandSignature.empty() || desktop.find("hyprland") != std::string::npos) {
         return CompositorKind::Hyprland;
     }
+    if (desktop.find("niri") != std::string::npos) {
+        return CompositorKind::Niri;
+    }
     if (!kdeSession.empty() || desktop.find("kde") != std::string::npos
         || desktop.find("plasma") != std::string::npos) {
         return CompositorKind::Kde;
@@ -49,6 +53,10 @@ std::unique_ptr<DesktopBackend> makeDesktopBackend(const CompositorKind requeste
     if (selected == CompositorKind::Hyprland) {
         debug("Desktop backend: Hyprland");
         return std::make_unique<HyprlandPortal>();
+    }
+    if (selected == CompositorKind::Niri) {
+        debug("Desktop backend: niri");
+        return std::make_unique<NiriPortal>();
     }
     debug("Desktop backend: KDE");
     return std::make_unique<KdePortal>();

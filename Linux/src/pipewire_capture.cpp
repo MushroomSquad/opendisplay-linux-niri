@@ -75,11 +75,13 @@ void PipeWireCapture::start(const int remoteFd, const std::uint32_t nodeId, cons
         stop();
         throw std::runtime_error("cannot create PipeWire context");
     }
-    core_ = pw_context_connect_fd(context_, remoteFd, nullptr, 0);
+    core_ = remoteFd < 0 ? pw_context_connect(context_, nullptr, 0)
+                         : pw_context_connect_fd(context_, remoteFd, nullptr, 0);
     if (core_ == nullptr) {
         ::close(remoteFd);
         stop();
-        throw std::runtime_error("cannot connect to the portal PipeWire remote");
+        throw std::runtime_error(remoteFd < 0 ? "cannot connect to the default PipeWire socket"
+                                             : "cannot connect to the portal PipeWire remote");
     }
 
     auto* properties = pw_properties_new(

@@ -13,6 +13,12 @@ void detectsDesktopWithoutChangingLegacyFallback() {
            == CompositorKind::Hyprland);
     assert(od::detectCompositor(CompositorKind::Auto, "", "instance", "")
            == CompositorKind::Hyprland);
+    assert(od::detectCompositor(CompositorKind::Auto, "NIRI", "", "")
+           == CompositorKind::Niri);
+    assert(od::detectCompositor(CompositorKind::Auto, "niri:GNOME", "", "true")
+           == CompositorKind::Niri);
+    assert(od::detectCompositor(CompositorKind::Niri, "KDE", "", "true")
+           == CompositorKind::Niri);
     assert(od::detectCompositor(CompositorKind::Auto, "KDE", "", "true")
            == CompositorKind::Kde);
     assert(od::detectCompositor(CompositorKind::Auto, "unknown", "", "")
