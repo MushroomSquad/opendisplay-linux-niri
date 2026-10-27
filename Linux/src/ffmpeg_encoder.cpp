@@ -183,7 +183,10 @@ std::vector<std::string> FfmpegEncoder::arguments(const VideoFormat& input) cons
     const std::string scale = "scale=" + std::to_string(outputWidth) + ':'
         + std::to_string(outputHeight) + ":flags=fast_bilinear";
     if (selected_ == EncoderKind::Vaapi) {
-        args.insert(args.end(), {"-vf", scale + ",format=nv12,hwupload", "-c:v", "h264_vaapi"});
+        // maxrate == bitrate makes FFmpeg pick CBR, where radeonsi pads static
+        // frames with filler NAL units that h264_metadata rejects (packet lost).
+        args.insert(args.end(), {"-vf", scale + ",format=nv12,hwupload", "-c:v", "h264_vaapi",
+                                 "-rc_mode", "VBR"});
     } else if (selected_ == EncoderKind::Nvenc) {
         args.insert(args.end(), {"-vf", scale, "-c:v", "h264_nvenc", "-preset", "p1",
                                  "-tune", "ull", "-delay", "0"});

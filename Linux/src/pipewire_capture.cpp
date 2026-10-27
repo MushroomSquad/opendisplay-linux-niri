@@ -3,10 +3,14 @@
 #include "opendisplay/log.hpp"
 #include "opendisplay/pipewire_format.hpp"
 
+#include <spa/param/buffers.h>
 #include <spa/param/format-utils.h>
 #include <spa/param/video/raw.h>
 #include <spa/utils/result.h>
 
+#include <linux/dma-buf.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -97,15 +101,16 @@ void PipeWireCapture::start(const int remoteFd, const std::uint32_t nodeId, cons
     }
     pw_stream_add_listener(stream_, &listener_, &streamEvents, this);
 
-    std::uint8_t storage[1024]{};
+    std::uint8_t storage[2048]{};
     spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, sizeof(storage));
-    const spa_pod* parameters[1];
+    const spa_pod* parameters[2];
     parameters[0] = buildPipeWireFormatOffer(builder, width, height, fps);
+    parameters[1] = buildPipeWireLinearDmabufOffer(builder, width, height, fps);
 
     const auto flags = static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT
         | PW_STREAM_FLAG_MAP_BUFFERS);
     const int result = pw_stream_connect(stream_, PW_DIRECTION_INPUT, nodeId, flags,
-                                         parameters, 1);
+                                         parameters, 2);
     if (result < 0) {
         stop();
         throw std::runtime_error(std::string("cannot connect PipeWire stream: ")
@@ -202,11 +207,25 @@ void PipeWireCapture::parameterChanged(void* data, const std::uint32_t id,
         return;
     }
     self.format_ = negotiated;
+
+    const bool dmabuf = spa_pod_find_prop(parameter, nullptr, SPA_FORMAT_VIDEO_modifier)
+        != nullptr;
+    const int dataTypes = dmabuf ? (1 << SPA_DATA_DmaBuf)
+                                 : ((1 << SPA_DATA_MemPtr) | (1 << SPA_DATA_MemFd));
+    std::uint8_t storage[256]{};
+    spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, sizeof(storage));
+    const spa_pod* buffers[1];
+    buffers[0] = static_cast<spa_pod*>(spa_pod_builder_add_object(
+        &builder,
+        SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
+        SPA_PARAM_BUFFERS_dataType, SPA_POD_Int(dataTypes)));
+    pw_stream_update_params(self.stream_, buffers, 1);
     log("PipeWire format: " + std::to_string(self.format_.size.width) + "x"
         + std::to_string(self.format_.size.height) + " "
         + pixelFormatName(self.format_.format) + " @ "
         + std::to_string(self.format_.framerate.num) + "/"
-        + std::to_string(self.format_.framerate.denom) + " fps");
+        + std::to_string(self.format_.framerate.denom) + " fps"
+        + (dmabuf ? " (LINEAR DMA-BUF)" : ""));
 }
 
 void PipeWireCapture::process(void* data) {
@@ -219,14 +238,47 @@ void PipeWireCapture::handleProcess() {
         return;
     }
     auto* buffer = pipewireBuffer->buffer;
-    if (buffer->n_datas == 0 || buffer->datas[0].data == nullptr
-        || buffer->datas[0].chunk == nullptr || format_.size.width == 0) {
+    if (buffer->n_datas == 0 || buffer->datas[0].chunk == nullptr || format_.size.width == 0) {
         pw_stream_queue_buffer(stream_, pipewireBuffer);
         return;
     }
 
     const auto& data = buffer->datas[0];
     const auto* chunk = data.chunk;
+    // PipeWire does not map DMA-BUF planes itself; map LINEAR buffers here and
+    // bracket the CPU read with DMA_BUF_IOCTL_SYNC so the GPU write is visible.
+    const void* mapped = data.data;
+    void* ownMapping = nullptr;
+    std::size_t mappingSize = 0;
+    std::uint64_t maxSize = data.maxsize;
+    const bool dmabuf = data.type == SPA_DATA_DmaBuf && data.fd >= 0;
+    if (mapped == nullptr && dmabuf) {
+        const auto end = ::lseek(static_cast<int>(data.fd), 0, SEEK_END);
+        mappingSize = end > 0 ? static_cast<std::size_t>(end)
+                              : static_cast<std::size_t>(data.mapoffset + data.maxsize);
+        ownMapping = ::mmap(nullptr, mappingSize, PROT_READ, MAP_SHARED,
+                            static_cast<int>(data.fd), 0);
+        if (ownMapping == MAP_FAILED) {
+            ownMapping = nullptr;
+        } else {
+            mapped = ownMapping;
+            maxSize = mappingSize;
+            dma_buf_sync sync{.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ};
+            ::ioctl(static_cast<int>(data.fd), DMA_BUF_IOCTL_SYNC, &sync);
+        }
+    }
+    const auto release = [&] {
+        if (ownMapping != nullptr) {
+            dma_buf_sync sync{.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ};
+            ::ioctl(static_cast<int>(data.fd), DMA_BUF_IOCTL_SYNC, &sync);
+            ::munmap(ownMapping, mappingSize);
+        }
+        pw_stream_queue_buffer(stream_, pipewireBuffer);
+    };
+    if (mapped == nullptr) {
+        release();
+        return;
+    }
     const auto width = static_cast<int>(format_.size.width);
     const auto height = static_cast<int>(format_.size.height);
     const int sourceStride = chunk->stride > 0 ? chunk->stride : width * 4;
@@ -234,11 +286,11 @@ void PipeWireCapture::handleProcess() {
     const auto required = static_cast<std::uint64_t>(chunk->offset)
         + static_cast<std::uint64_t>(sourceStride) * static_cast<std::uint64_t>(height - 1)
         + static_cast<std::uint64_t>(targetStride);
-    if (sourceStride < targetStride || required > data.maxsize) {
-        pw_stream_queue_buffer(stream_, pipewireBuffer);
+    if (sourceStride < targetStride || required > maxSize) {
+        release();
         return;
     }
-    const auto* source = static_cast<const char*>(data.data) + chunk->offset;
+    const auto* source = static_cast<const char*>(mapped) + chunk->offset;
 
     CapturedFrame frame;
     frame.format = VideoFormat{
@@ -258,7 +310,7 @@ void PipeWireCapture::handleProcess() {
                     source + static_cast<std::size_t>(row * sourceStride),
                     static_cast<std::size_t>(targetStride));
     }
-    pw_stream_queue_buffer(stream_, pipewireBuffer);
+    release();
     if (callback_) {
         callback_(std::move(frame));
     }
