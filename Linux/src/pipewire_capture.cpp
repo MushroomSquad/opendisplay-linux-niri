@@ -13,6 +13,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <immintrin.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -22,6 +24,29 @@
 
 namespace od {
 namespace {
+
+// DMA-BUF mappings of VRAM are write-combined: ordinary loads are uncached
+// and take ~25 ns each. Non-temporal 16-byte loads fill WC line buffers
+// instead, which is an order of magnitude faster for this read-once copy.
+__attribute__((target("sse4.1")))
+void copyFromWriteCombined(char* target, const char* source, std::size_t size) {
+    std::size_t offset = 0;
+    if ((reinterpret_cast<std::uintptr_t>(source) & 15U) == 0) {
+        for (; offset + 64 <= size; offset += 64) {
+            auto* from = reinterpret_cast<__m128i*>(const_cast<char*>(source + offset));
+            const __m128i a = _mm_stream_load_si128(from);
+            const __m128i b = _mm_stream_load_si128(from + 1);
+            const __m128i c = _mm_stream_load_si128(from + 2);
+            const __m128i d = _mm_stream_load_si128(from + 3);
+            auto* to = reinterpret_cast<__m128i*>(target + offset);
+            _mm_storeu_si128(to, a);
+            _mm_storeu_si128(to + 1, b);
+            _mm_storeu_si128(to + 2, c);
+            _mm_storeu_si128(to + 3, d);
+        }
+    }
+    std::memcpy(target + offset, source + offset, size - offset);
+}
 
 const pw_stream_events streamEvents = [] {
     pw_stream_events events{};
@@ -57,7 +82,8 @@ const char* pixelFormatName(const spa_video_format format) {
 PipeWireCapture::~PipeWireCapture() { stop(); }
 
 void PipeWireCapture::start(const int remoteFd, const std::uint32_t nodeId, const int width,
-                            const int height, const int fps, FrameCallback callback) {
+                            const int height, const int fps, FrameCallback callback,
+                            DmabufCallback dmabufCallback) {
     stop();
     {
         std::lock_guard lock(stateMutex_);
@@ -68,6 +94,7 @@ void PipeWireCapture::start(const int remoteFd, const std::uint32_t nodeId, cons
     std::call_once(initialized, [] { pw_init(nullptr, nullptr); });
 
     callback_ = std::move(callback);
+    dmabufCallback_ = std::move(dmabufCallback);
     loop_ = pw_thread_loop_new("opendisplay-capture", nullptr);
     if (loop_ == nullptr) {
         ::close(remoteFd);
@@ -158,6 +185,7 @@ void PipeWireCapture::stop() {
         loop_ = nullptr;
     }
     callback_ = {};
+    dmabufCallback_ = {};
     format_ = {};
 }
 
@@ -207,6 +235,7 @@ void PipeWireCapture::parameterChanged(void* data, const std::uint32_t id,
         return;
     }
     self.format_ = negotiated;
+    self.modifier_ = negotiated.modifier;
 
     const bool dmabuf = spa_pod_find_prop(parameter, nullptr, SPA_FORMAT_VIDEO_modifier)
         != nullptr;
@@ -243,8 +272,33 @@ void PipeWireCapture::handleProcess() {
         return;
     }
 
+    const auto copyStart = std::chrono::steady_clock::now();
     const auto& data = buffer->datas[0];
     const auto* chunk = data.chunk;
+    if (dmabufCallback_ && data.type == SPA_DATA_DmaBuf && data.fd >= 0) {
+        const auto width = static_cast<int>(format_.size.width);
+        DmabufFrame frame{
+            .format = VideoFormat{
+                .width = width,
+                .height = static_cast<int>(format_.size.height),
+                .stride = chunk->stride > 0 ? chunk->stride : width * 4,
+                .fps = format_.framerate.denom > 0
+                    ? static_cast<int>(format_.framerate.num / format_.framerate.denom)
+                    : 60,
+                .pixelFormat = *pixelFormat(format_.format),
+            },
+            .fd = static_cast<int>(data.fd),
+            .offset = chunk->offset,
+            .size = data.maxsize > 0 ? data.maxsize
+                : static_cast<std::uint64_t>(::lseek(static_cast<int>(data.fd), 0, SEEK_END)),
+            .modifier = modifier_,
+            .capturedAtMs = wallClockMs(),
+        };
+        if (dmabufCallback_(frame)) {
+            pw_stream_queue_buffer(stream_, pipewireBuffer);
+            return;
+        }
+    }
     // PipeWire does not map DMA-BUF planes itself; map LINEAR buffers here and
     // bracket the CPU read with DMA_BUF_IOCTL_SYNC so the GPU write is visible.
     const void* mapped = data.data;
@@ -306,11 +360,30 @@ void PipeWireCapture::handleProcess() {
     frame.sequence = sequence_.fetch_add(1);
     frame.bytes.resize(static_cast<std::size_t>(targetStride * height));
     for (int row = 0; row < height; ++row) {
-        std::memcpy(frame.bytes.data() + static_cast<std::size_t>(row * targetStride),
-                    source + static_cast<std::size_t>(row * sourceStride),
-                    static_cast<std::size_t>(targetStride));
+        auto* to = frame.bytes.data() + static_cast<std::size_t>(row * targetStride);
+        const auto* from = source + static_cast<std::size_t>(row * sourceStride);
+        if (dmabuf) {
+            copyFromWriteCombined(to, from, static_cast<std::size_t>(targetStride));
+        } else {
+            std::memcpy(to, from, static_cast<std::size_t>(targetStride));
+        }
     }
     release();
+    if (verboseLogging) {
+        static int frames = 0;
+        static double copyMs = 0;
+        static auto windowStart = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        copyMs += std::chrono::duration<double, std::milli>(now - copyStart).count();
+        ++frames;
+        if (now - windowStart >= std::chrono::seconds(1)) {
+            debug("capture: " + std::to_string(frames) + " fps, copy avg "
+                  + std::to_string(copyMs / frames) + " ms");
+            frames = 0;
+            copyMs = 0;
+            windowStart = now;
+        }
+    }
     if (callback_) {
         callback_(std::move(frame));
     }

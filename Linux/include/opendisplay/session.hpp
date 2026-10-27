@@ -5,6 +5,7 @@
 #include "opendisplay/pipewire_capture.hpp"
 #include "opendisplay/socket.hpp"
 #include "opendisplay/types.hpp"
+#include "opendisplay/vaapi_dmabuf_encoder.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -51,6 +52,8 @@ private:
     std::unique_ptr<DesktopBackend> desktop_;
     PipeWireCapture capture_;
     FfmpegEncoder encoder_;
+    VaapiDmabufEncoder zeroCopyEncoder_;
+    std::atomic_bool zeroCopyActive_ = false;
     std::thread receiver_;
     std::atomic_bool connected_ = false;
     std::mutex sendMutex_;

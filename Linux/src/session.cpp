@@ -11,6 +11,8 @@
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
+
+#include <unistd.h>
 #include <vector>
 
 #include <unistd.h>
@@ -80,23 +82,71 @@ void Session::startPipeline(const PhoneInfo& phone) {
     });
     bool pipewireFdHandedOff = false;
     try {
-        encoder_.start(EncoderConfig{
+        const EncoderConfig encoderConfig{
             .kind = options_.encoder,
             .vaapiDevice = options_.vaapiDevice,
             .outputWidth = outputWidth,
             .outputHeight = outputHeight,
             .fps = options_.fps,
             .bitrate = options_.bitrate,
-        }, [this](EncodedFrame frame) {
+        };
+        const auto sendEncoded = [this](EncodedFrame frame) {
             if (frame.annexB.empty() || !wire::containsAnnexBStartCode(frame.annexB)) {
                 return;
             }
-            send(wire::videoPayload(frame, wallClockMs()));
-        });
+            const auto sendStart = wallClockMs();
+            send(wire::videoPayload(frame, sendStart));
+            if (verboseLogging) {
+                static int frames = 0;
+                static std::int64_t encodeMs = 0;
+                static std::int64_t sendMs = 0;
+                static std::size_t bytes = 0;
+                static auto windowStart = sendStart;
+                const auto sent = wallClockMs();
+                encodeMs += sendStart - frame.capturedAtMs;
+                sendMs += sent - sendStart;
+                bytes += frame.annexB.size();
+                ++frames;
+                if (sent - windowStart >= 1000) {
+                    debug("send: " + std::to_string(frames) + " fps, capture->encoded avg "
+                          + std::to_string(encodeMs / frames) + " ms, socket write avg "
+                          + std::to_string(sendMs / frames) + " ms, "
+                          + std::to_string(bytes * 8 / 1000) + " kbit/s");
+                    frames = 0;
+                    encodeMs = sendMs = 0;
+                    bytes = 0;
+                    windowStart = sent;
+                }
+            }
+        };
+        encoder_.start(encoderConfig, sendEncoded);
+        // DMA-BUF capture (niri, Mutter) is encoded on the GPU without a CPU
+        // readback; any failure drops back to the FFmpeg subprocess for good.
+        zeroCopyActive_ = false;
+        if ((options_.encoder == EncoderKind::Auto || options_.encoder == EncoderKind::Vaapi)
+            && ::access(options_.vaapiDevice.c_str(), R_OK | W_OK) == 0) {
+            try {
+                zeroCopyEncoder_.start(encoderConfig, sendEncoded);
+                zeroCopyActive_ = true;
+            } catch (const std::exception& error) {
+                log(std::string("Zero-copy VA-API encoder unavailable: ") + error.what());
+            }
+        }
         pipewireFdHandedOff = true;
         capture_.start(capture.pipewireFd, capture.stream.nodeId, capture.captureWidth,
                        capture.captureHeight, options_.fps, [this](CapturedFrame frame) {
                            encoder_.submit(std::move(frame));
+                       }, [this](const DmabufFrame& frame) {
+                           if (!zeroCopyActive_.load()) return false;
+                           try {
+                               zeroCopyEncoder_.encode(frame);
+                               return true;
+                           } catch (const std::exception& error) {
+                               log(std::string("Zero-copy encode failed, using FFmpeg: ")
+                                   + error.what());
+                               zeroCopyActive_ = false;
+                               return false;
+                           }
                        });
         pipelineRunning_ = true;
         activePhone_ = phone;
@@ -106,6 +156,8 @@ void Session::startPipeline(const PhoneInfo& phone) {
         if (!pipewireFdHandedOff) {
             ::close(capture.pipewireFd);
         }
+        capture_.stop();
+        zeroCopyEncoder_.stop();
         encoder_.stop();
         desktop_->stop();
         throw;
@@ -114,6 +166,7 @@ void Session::startPipeline(const PhoneInfo& phone) {
 
 void Session::stopPipeline() {
     capture_.stop();
+    zeroCopyEncoder_.stop();
     encoder_.stop();
     desktop_->stop();
     pipelineRunning_ = false;
@@ -186,6 +239,7 @@ void Session::receiveLoop() {
         } else if (type == QStringLiteral("kf")) {
             log("Receiver requested a keyframe");
             encoder_.requestKeyframe();
+            zeroCopyEncoder_.requestKeyframe();
         } else if (type == QStringLiteral("stats")) {
             debug("Receiver stats: "
                   + QJsonDocument(*object).toJson(QJsonDocument::Compact).toStdString());

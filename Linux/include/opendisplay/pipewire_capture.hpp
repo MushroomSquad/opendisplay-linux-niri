@@ -18,6 +18,8 @@ namespace od {
 class PipeWireCapture {
 public:
     using FrameCallback = std::function<void(CapturedFrame)>;
+    /// Returns true when it consumed the DMA-BUF; false falls back to a CPU copy.
+    using DmabufCallback = std::function<bool(const DmabufFrame&)>;
 
     PipeWireCapture() = default;
     ~PipeWireCapture();
@@ -25,7 +27,7 @@ public:
     PipeWireCapture& operator=(const PipeWireCapture&) = delete;
 
     void start(int remoteFd, std::uint32_t nodeId, int width, int height, int fps,
-               FrameCallback callback);
+               FrameCallback callback, DmabufCallback dmabufCallback = {});
     void stop();
     [[nodiscard]] std::optional<std::string> error() const;
 
@@ -46,6 +48,8 @@ private:
     spa_hook listener_{};
     spa_video_info_raw format_{};
     FrameCallback callback_;
+    DmabufCallback dmabufCallback_;
+    std::uint64_t modifier_ = 0;
     std::atomic<std::uint64_t> sequence_ = 0;
     mutable std::mutex stateMutex_;
     std::condition_variable stateCondition_;

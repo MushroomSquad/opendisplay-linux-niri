@@ -79,6 +79,16 @@ struct CapturedFrame {
     std::string bytes;
 };
 
+/// A capture buffer still owned by PipeWire; valid only during the callback.
+struct DmabufFrame {
+    VideoFormat format;
+    int fd = -1;
+    std::uint32_t offset = 0;
+    std::uint64_t size = 0;
+    std::uint64_t modifier = 0;
+    std::int64_t capturedAtMs = 0;
+};
+
 struct EncodedFrame {
     std::int64_t capturedAtMs = 0;
     bool keyframe = false;

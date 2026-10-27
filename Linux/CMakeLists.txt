@@ -16,6 +16,8 @@ pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
 pkg_check_modules(AVAHI REQUIRED IMPORTED_TARGET avahi-client)
 pkg_check_modules(USBMUXD REQUIRED IMPORTED_TARGET libusbmuxd-2.0)
 pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client)
+pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET libavcodec libavfilter libavutil)
+pkg_check_modules(LIBVA REQUIRED IMPORTED_TARGET libva libdrm)
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
 set(OPENDISPLAY_BUILD_GUI AUTO CACHE STRING
@@ -42,6 +44,7 @@ set(OPENDISPLAY_CORE_SOURCES
     include/opendisplay/kde_portal.hpp
     include/opendisplay/hyprland_portal.hpp
     include/opendisplay/niri_portal.hpp
+    include/opendisplay/vaapi_dmabuf_encoder.hpp
     include/opendisplay/xdg_portal.hpp
     ${VIRTUAL_POINTER_HEADER}
     ${VIRTUAL_POINTER_CODE}
@@ -58,6 +61,7 @@ set(OPENDISPLAY_CORE_SOURCES
     src/pipewire_format.cpp
     src/session.cpp
     src/socket.cpp
+    src/vaapi_dmabuf_encoder.cpp
     src/wire.cpp
     src/wayland_virtual_pointer.cpp
     src/xdg_portal.cpp
@@ -75,6 +79,8 @@ target_link_libraries(opendisplay-core PUBLIC
     PkgConfig::AVAHI
     PkgConfig::USBMUXD
     PkgConfig::WAYLAND
+    PkgConfig::LIBAV
+    PkgConfig::LIBVA
     Threads::Threads
 )
 
