@@ -1,9 +1,9 @@
 pkgname=opendisplay-linux-git
 pkgver=1.14.0.r0.g0173617
 pkgrel=4
-pkgdesc="Use an iOS device as a KDE or Hyprland Wayland display"
+pkgdesc="Use an iOS device as a KDE, Hyprland or niri Wayland display"
 arch=('x86_64')
-url="https://github.com/tixwho/opendisplay-linux"
+url="https://github.com/MushroomSquad/opendisplay-linux-niri"
 license=('GPL-3.0-only')
 depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'kirigami' 'pipewire' 'avahi'
          'libusbmuxd' 'usbmuxd' 'ffmpeg' 'libkscreen>=6.6' 'wayland'
@@ -13,11 +13,12 @@ optdepends=('libva-mesa-driver: VA-API support for AMD GPUs'
             'intel-media-driver: VA-API support for modern Intel GPUs'
             'nvidia-utils: NVENC support for NVIDIA GPUs'
             'hyprland: Hyprland compositor backend'
-            'xdg-desktop-portal-hyprland: Hyprland screen-cast portal')
+            'xdg-desktop-portal-hyprland: Hyprland screen-cast portal'
+            'niri: niri compositor backend (mirror mode)')
 provides=('opendisplay-linux')
 conflicts=('opendisplay-linux')
-_giturl="https://github.com/tixwho/opendisplay-linux.git"
-_branch="linux-port"
+_giturl="https://github.com/MushroomSquad/opendisplay-linux-niri.git"
+_branch="main"
 source=("opendisplay::git+${_giturl}#branch=${_branch}")
 sha256sums=('SKIP')
 
